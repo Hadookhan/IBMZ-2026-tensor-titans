@@ -1,0 +1,7 @@
+.local/
+.ipynb_checkpoints/
+__pycache__/
+.venv/
+venv/
+*.gguf
+.env
