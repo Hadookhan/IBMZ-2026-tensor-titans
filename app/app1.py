@@ -1,6 +1,7 @@
 # =========================================================
-# HomeMatch AI
-# Buy / Rent / Invest version
+# PropertyFinder
+# Buy / Rent / Invest
+# + Average Bedrooms
 # =========================================================
 
 import os
@@ -17,6 +18,9 @@ from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from IPython.display import display, clear_output
 
+from dotenv import load_dotenv
+from pathlib import Path
+
 
 # =========================================================
 # CONFIG
@@ -26,7 +30,27 @@ DATA_PATH = "../data/property_price_data.csv"
 MODEL_PATH = "../models/future_growth_rf_v1.pkl"
 
 PROPERTYDATA_BASE_URL = "https://api.propertydata.co.uk"
-PROPERTYDATA_API_KEY = os.environ.get("PROPERTYDATA_API_KEY")
+
+BASE_DIR = Path(__file__).resolve().parent
+ENV_PATH = BASE_DIR / ".env"
+
+print("Looking for .env at:", ENV_PATH)
+print(".env exists:", ENV_PATH.exists())
+
+# Load variables from .env
+load_dotenv(
+    dotenv_path=ENV_PATH,
+    override=True
+)
+
+PROPERTYDATA_API_KEY = os.getenv(
+    "PROPERTYDATA_API_KEY"
+)
+
+print(
+    "API key loaded:",
+    bool(PROPERTYDATA_API_KEY)
+)
 
 GOOD_INTERNET_MBPS = 50
 RESTAURANT_DISTANCE_MILES = 1.0
@@ -51,6 +75,7 @@ MODEL_FEATURES = [
 # =========================================================
 
 if not PROPERTYDATA_API_KEY:
+
     print(
         "WARNING: PROPERTYDATA_API_KEY is not set.\n\n"
         "Run this in a cell BEFORE this app:\n\n"
@@ -78,6 +103,7 @@ print("Growth model loaded successfully.")
 def propertydata_request(endpoint, **params):
 
     if not PROPERTYDATA_API_KEY:
+
         raise RuntimeError(
             "PROPERTYDATA_API_KEY has not been set."
         )
@@ -111,10 +137,14 @@ def propertydata_request(endpoint, **params):
                 f"Waiting {wait_seconds}s..."
             )
 
-            time.sleep(wait_seconds)
+            time.sleep(
+                wait_seconds
+            )
+
             continue
 
         try:
+
             data = response.json()
 
         except Exception:
@@ -128,6 +158,7 @@ def propertydata_request(endpoint, **params):
         if response.ok:
 
             if data.get("status") == "success":
+
                 return data
 
             raise RuntimeError(
@@ -168,7 +199,9 @@ def is_full_postcode(postcode):
 
     return bool(
         FULL_POSTCODE_RE.match(
-            clean_postcode(postcode)
+            clean_postcode(
+                postcode
+            )
         )
     )
 
@@ -176,11 +209,17 @@ def is_full_postcode(postcode):
 def format_full_postcode(postcode):
 
     value = (
-        clean_postcode(postcode)
-        .replace(" ", "")
+        clean_postcode(
+            postcode
+        )
+        .replace(
+            " ",
+            ""
+        )
     )
 
     if len(value) <= 3:
+
         return value
 
     return (
@@ -194,14 +233,22 @@ def _extract_full_postcodes(obj):
 
     found = []
 
-    if isinstance(obj, dict):
+    if isinstance(
+        obj,
+        dict
+    ):
 
         for key, value in obj.items():
 
             if (
                 str(key).lower() == "postcode"
-                and isinstance(value, str)
-                and is_full_postcode(value)
+                and isinstance(
+                    value,
+                    str
+                )
+                and is_full_postcode(
+                    value
+                )
             ):
 
                 found.append(
@@ -216,7 +263,10 @@ def _extract_full_postcodes(obj):
                 )
             )
 
-    elif isinstance(obj, list):
+    elif isinstance(
+        obj,
+        list
+    ):
 
         for item in obj:
 
@@ -230,7 +280,9 @@ def _extract_full_postcodes(obj):
 
 
 @lru_cache(maxsize=500)
-def resolve_full_postcode(area_postcode):
+def resolve_full_postcode(
+    area_postcode
+):
 
     area_postcode = clean_postcode(
         area_postcode
@@ -262,20 +314,22 @@ def resolve_full_postcode(area_postcode):
         )
 
         if possible:
+
             return possible[0]
 
     except Exception as e:
 
         print(
             f"[POSTCODE ERROR] "
-            f"{area_postcode}: {e}"
+            f"{area_postcode}: "
+            f"{e}"
         )
 
     return None
 
 
 # =========================================================
-# BUYING PRICE
+# LIVE PURCHASE PRICE
 # =========================================================
 
 @lru_cache(maxsize=500)
@@ -285,24 +339,46 @@ def fetch_live_price(
 ):
 
     params = {
-        "postcode": postcode
+        "postcode":
+            postcode
     }
 
     if bedrooms:
-        params["bedrooms"] = bedrooms
+
+        params[
+            "bedrooms"
+        ] = bedrooms
 
     result = propertydata_request(
         "prices",
         **params
     )
 
+    average = (
+        result
+        .get(
+            "data",
+            {}
+        )
+        .get(
+            "average"
+        )
+    )
+
+    if average is None:
+
+        raise RuntimeError(
+            f"No asking price returned "
+            f"for {postcode}"
+        )
+
     return float(
-        result["data"]["average"]
+        average
     )
 
 
 # =========================================================
-# RENT PRICE
+# LIVE WEEKLY RENT
 # =========================================================
 
 @lru_cache(maxsize=500)
@@ -312,20 +388,200 @@ def fetch_live_rent(
 ):
 
     params = {
-        "postcode": postcode
+        "postcode":
+            postcode
     }
 
     if bedrooms:
-        params["bedrooms"] = bedrooms
+
+        params[
+            "bedrooms"
+        ] = bedrooms
 
     result = propertydata_request(
         "rents",
         **params
     )
 
-    return float(
-        result["data"]["average"]
+    # IMPORTANT:
+    # rents are nested under data -> long_let
+    long_let = (
+        result
+        .get(
+            "data",
+            {}
+        )
+        .get(
+            "long_let",
+            {}
+        )
     )
+
+    average = long_let.get(
+        "average"
+    )
+
+    if average is None:
+
+        raise RuntimeError(
+            f"No weekly rent returned "
+            f"for {postcode}"
+        )
+
+    return float(
+        average
+    )
+
+
+# =========================================================
+# AVERAGE BEDROOMS
+# =========================================================
+
+@lru_cache(maxsize=500)
+def fetch_average_bedrooms(
+    postcode,
+    mode
+):
+
+    # -----------------------------------------
+    # RENT LISTINGS
+    # -----------------------------------------
+
+    if mode == "rent":
+
+        result = propertydata_request(
+            "rents",
+            postcode=postcode,
+            points=50
+        )
+
+        raw_data = (
+            result
+            .get(
+                "data",
+                {}
+            )
+            .get(
+                "long_let",
+                {}
+            )
+            .get(
+                "raw_data",
+                []
+            )
+        )
+
+    # -----------------------------------------
+    # BUY / INVEST LISTINGS
+    # -----------------------------------------
+
+    else:
+
+        result = propertydata_request(
+            "prices",
+            postcode=postcode,
+            points=50
+        )
+
+        raw_data = (
+            result
+            .get(
+                "data",
+                {}
+            )
+            .get(
+                "raw_data",
+                []
+            )
+        )
+
+
+    bedroom_values = []
+
+
+    for property_item in raw_data:
+
+        bedroom_value = (
+            property_item
+            .get(
+                "bedrooms"
+            )
+        )
+
+        if bedroom_value is None:
+
+            continue
+
+        try:
+
+            bedroom_value = float(
+                bedroom_value
+            )
+
+        except (
+            TypeError,
+            ValueError
+        ):
+
+            continue
+
+
+        if (
+            bedroom_value >= 0
+            and bedroom_value <= 10
+        ):
+
+            bedroom_values.append(
+                bedroom_value
+            )
+
+
+    if not bedroom_values:
+
+        return None
+
+
+    return float(
+        np.mean(
+            bedroom_values
+        )
+    )
+
+
+# =========================================================
+# ROUND BEDROOMS
+# =========================================================
+
+def display_bedrooms(
+    average_bedrooms
+):
+
+    if average_bedrooms is None:
+
+        return "—"
+
+    try:
+
+        # Conventional rounding:
+        # 2.4 -> 2
+        # 2.5 -> 3
+        # 2.8 -> 3
+        rounded = int(
+            np.floor(
+                float(
+                    average_bedrooms
+                )
+                + 0.5
+            )
+        )
+
+        return str(
+            rounded
+        )
+
+    except Exception:
+
+        return "—"
 
 
 # =========================================================
@@ -357,10 +613,13 @@ def fetch_crime(postcode):
 
     return {
         "crime_rate":
-            float(crime_rate),
+            float(
+                crime_rate
+            ),
 
         "crime_rating":
-            crime_rating or "Unknown"
+            crime_rating
+            or "Unknown"
     }
 
 
@@ -385,17 +644,30 @@ def fetch_school_data(postcode):
 
     schools.extend(
         data
-        .get("state", {})
-        .get("nearest", [])
+        .get(
+            "state",
+            {}
+        )
+        .get(
+            "nearest",
+            []
+        )
     )
 
     schools.extend(
         data
-        .get("independent", {})
-        .get("nearest", [])
+        .get(
+            "independent",
+            {}
+        )
+        .get(
+            "nearest",
+            []
+        )
     )
 
     valid = []
+
 
     for school in schools:
 
@@ -411,6 +683,7 @@ def fetch_school_data(postcode):
             TypeError,
             ValueError
         ):
+
             continue
 
         valid.append(
@@ -420,6 +693,7 @@ def fetch_school_data(postcode):
             )
         )
 
+
     if not valid:
 
         raise RuntimeError(
@@ -427,10 +701,13 @@ def fetch_school_data(postcode):
             f"for {postcode}"
         )
 
+
     distance, nearest = min(
         valid,
-        key=lambda x: x[0]
+        key=lambda x:
+            x[0]
     )
+
 
     return {
         "school_nearby":
@@ -455,9 +732,14 @@ def _walk_dicts(obj):
 
     found = []
 
-    if isinstance(obj, dict):
+    if isinstance(
+        obj,
+        dict
+    ):
 
-        found.append(obj)
+        found.append(
+            obj
+        )
 
         for value in obj.values():
 
@@ -467,7 +749,10 @@ def _walk_dicts(obj):
                 )
             )
 
-    elif isinstance(obj, list):
+    elif isinstance(
+        obj,
+        list
+    ):
 
         for item in obj:
 
@@ -485,7 +770,9 @@ def _walk_dicts(obj):
 # =========================================================
 
 @lru_cache(maxsize=500)
-def fetch_restaurant_data(postcode):
+def fetch_restaurant_data(
+    postcode
+):
 
     result = propertydata_request(
         "restaurants",
@@ -493,6 +780,7 @@ def fetch_restaurant_data(postcode):
     )
 
     restaurant_records = []
+
 
     for record in _walk_dicts(
         result
@@ -503,7 +791,9 @@ def fetch_restaurant_data(postcode):
         )
 
         name = (
-            record.get("name")
+            record.get(
+                "name"
+            )
             or record.get(
                 "restaurant_name"
             )
@@ -511,6 +801,7 @@ def fetch_restaurant_data(postcode):
                 "business_name"
             )
         )
+
 
         if (
             distance is not None
@@ -521,45 +812,71 @@ def fetch_restaurant_data(postcode):
 
                 restaurant_records.append({
                     "name":
-                        str(name),
+                        str(
+                            name
+                        ),
 
                     "distance":
-                        float(distance)
+                        float(
+                            distance
+                        )
                 })
 
             except (
                 TypeError,
                 ValueError
             ):
+
                 pass
 
+
     unique = {}
+
 
     for restaurant in restaurant_records:
 
         key = (
-            restaurant["name"],
-            restaurant["distance"]
+            restaurant[
+                "name"
+            ],
+
+            restaurant[
+                "distance"
+            ]
         )
 
-        unique[key] = restaurant
+        unique[
+            key
+        ] = restaurant
+
 
     restaurant_records = list(
         unique.values()
     )
 
+
     if not restaurant_records:
 
         return {
-            "restaurants_nearby": None,
-            "restaurant_count": None,
-            "nearest_restaurant_distance": None
+            "restaurants_nearby":
+                None,
+
+            "restaurant_count":
+                None,
+
+            "nearest_restaurant_distance":
+                None
         }
 
+
     nearest = min(
-        r["distance"]
+        r[
+            "distance"
+        ]
+
         for r in restaurant_records
     )
+
 
     return {
         "restaurants_nearby":
@@ -567,7 +884,9 @@ def fetch_restaurant_data(postcode):
             <= RESTAURANT_DISTANCE_MILES,
 
         "restaurant_count":
-            len(restaurant_records),
+            len(
+                restaurant_records
+            ),
 
         "nearest_restaurant_distance":
             nearest
@@ -579,7 +898,9 @@ def fetch_restaurant_data(postcode):
 # =========================================================
 
 @lru_cache(maxsize=500)
-def fetch_flood_data(postcode):
+def fetch_flood_data(
+    postcode
+):
 
     result = propertydata_request(
         "flood-risk",
@@ -597,9 +918,11 @@ def fetch_flood_data(postcode):
             f"for {postcode}"
         )
 
+
     flood_risk = str(
         flood_risk
     ).strip()
+
 
     low_flood_risk = (
         flood_risk.lower()
@@ -608,6 +931,7 @@ def fetch_flood_data(postcode):
             "very low"
         }
     )
+
 
     return {
         "flood_risk":
@@ -619,11 +943,13 @@ def fetch_flood_data(postcode):
 
 
 # =========================================================
-# INTERNET SPEED
+# INTERNET
 # =========================================================
 
 @lru_cache(maxsize=500)
-def fetch_internet_data(postcode):
+def fetch_internet_data(
+    postcode
+):
 
     result = propertydata_request(
         "internet-speed",
@@ -632,13 +958,20 @@ def fetch_internet_data(postcode):
 
     candidates = []
 
-    def extract_number(value):
+
+    def extract_number(
+        value
+    ):
 
         if isinstance(
             value,
             (int, float)
         ):
-            return float(value)
+
+            return float(
+                value
+            )
+
 
         if isinstance(
             value,
@@ -674,7 +1007,9 @@ def fetch_internet_data(postcode):
             for key, value in obj.items():
 
                 key_text = (
-                    str(key)
+                    str(
+                        key
+                    )
                     .lower()
                 )
 
@@ -684,8 +1019,10 @@ def fetch_internet_data(postcode):
                     else key_text
                 )
 
+
                 relevant = any(
-                    word in new_path
+                    word
+                    in new_path
 
                     for word in [
                         "speed",
@@ -695,8 +1032,10 @@ def fetch_internet_data(postcode):
                     ]
                 )
 
+
                 percentage = any(
-                    word in new_path
+                    word
+                    in new_path
 
                     for word in [
                         "percent",
@@ -706,9 +1045,11 @@ def fetch_internet_data(postcode):
                     ]
                 )
 
+
                 number = extract_number(
                     value
                 )
+
 
                 if (
                     relevant
@@ -725,6 +1066,7 @@ def fetch_internet_data(postcode):
                             number
                     })
 
+
                 if isinstance(
                     value,
                     str
@@ -737,8 +1079,7 @@ def fetch_internet_data(postcode):
                     )
 
                     if (
-                        mbps_number
-                        is not None
+                        mbps_number is not None
                         and mbps_number > 0
                     ):
 
@@ -750,10 +1091,12 @@ def fetch_internet_data(postcode):
                                 mbps_number
                         })
 
+
                 search(
                     value,
                     new_path
                 )
+
 
         elif isinstance(
             obj,
@@ -770,7 +1113,9 @@ def fetch_internet_data(postcode):
                 )
 
 
-    search(result)
+    search(
+        result
+    )
 
 
     if not candidates:
@@ -785,7 +1130,8 @@ def fetch_internet_data(postcode):
 
         item
 
-        for item in candidates
+        for item
+        in candidates
 
         if "download"
         in item["path"]
@@ -795,7 +1141,9 @@ def fetch_internet_data(postcode):
     if download_candidates:
 
         speed = max(
-            item["value"]
+            item[
+                "value"
+            ]
 
             for item
             in download_candidates
@@ -804,7 +1152,9 @@ def fetch_internet_data(postcode):
     else:
 
         speed = max(
-            item["value"]
+            item[
+                "value"
+            ]
 
             for item
             in candidates
@@ -813,10 +1163,14 @@ def fetch_internet_data(postcode):
 
     return {
         "internet_download_mbps":
-            float(speed),
+            float(
+                speed
+            ),
 
         "good_internet":
-            float(speed)
+            float(
+                speed
+            )
             >= GOOD_INTERNET_MBPS
     }
 
@@ -825,25 +1179,37 @@ def fetch_internet_data(postcode):
 # MODEL
 # =========================================================
 
-def predict_growth_from_row(row):
+def predict_growth_from_row(
+    row
+):
 
     input_data = {
+
         feature:
-            row[feature]
+            row[
+                feature
+            ]
 
         for feature
         in MODEL_FEATURES
     }
 
+
     X_new = pd.DataFrame(
-        [input_data],
+        [
+            input_data
+        ],
         columns=MODEL_FEATURES
     )
 
+
     prediction = (
         growth_model
-        .predict(X_new)[0]
+        .predict(
+            X_new
+        )[0]
     )
+
 
     return float(
         prediction
@@ -858,12 +1224,14 @@ def add_model_predictions(
         candidate_df.copy()
     )
 
+
     candidate_df[
         "predicted_growth"
     ] = candidate_df.apply(
         predict_growth_from_row,
         axis=1
     )
+
 
     candidate_df[
         "predicted_future_price"
@@ -882,6 +1250,7 @@ def add_model_predictions(
         )
     )
 
+
     return candidate_df
 
 
@@ -897,12 +1266,20 @@ def create_initial_shortlist(
 
     candidates = df.copy()
 
-    candidates["postcode"] = (
-        candidates["postcode"]
-        .astype(str)
+
+    candidates[
+        "postcode"
+    ] = (
+        candidates[
+            "postcode"
+        ]
+        .astype(
+            str
+        )
         .str.strip()
         .str.upper()
     )
+
 
     candidates = candidates[
         candidates[
@@ -910,11 +1287,13 @@ def create_initial_shortlist(
         ] > 0
     ].copy()
 
+
     candidates = (
         add_model_predictions(
             candidates
         )
     )
+
 
     candidates = (
         candidates
@@ -934,12 +1313,13 @@ def create_initial_shortlist(
         "invest"
     ]:
 
-        # Loose initial filter.
-        # Final filtering uses live asking price.
         candidates = candidates[
-            candidates["price_data_7"]
+            candidates[
+                "price_data_7"
+            ]
             <= budget_value * 1.20
         ]
+
 
         candidates = (
             candidates
@@ -952,27 +1332,21 @@ def create_initial_shortlist(
             )
         )
 
+
         return candidates
 
 
     # =====================================================
     # RENT
     # =====================================================
-    #
-    # £400 here means £400 PER WEEK.
-    #
-    # We cannot compare £400 to purchase price,
-    # so no purchase-price budget filtering happens here.
-    # Live rents are fetched later via /rents.
-    # =====================================================
 
     if mode == "rent":
 
-        # Lower property-value areas are more
-        # likely to contain affordable rents,
-        # while predicted growth acts as a
-        # secondary sorting feature.
+        # Do NOT compare £400/week against
+        # property purchase prices.
 
+        # Use a reasonably broad candidate
+        # pool and check actual rent later.
         candidates = (
             candidates
             .sort_values(
@@ -990,6 +1364,7 @@ def create_initial_shortlist(
             )
         )
 
+
         return candidates
 
 
@@ -999,7 +1374,7 @@ def create_initial_shortlist(
 
 
 # =========================================================
-# ENRICH ONE CANDIDATE
+# ENRICH CANDIDATE
 # =========================================================
 
 def enrich_candidate(
@@ -1009,16 +1384,25 @@ def enrich_candidate(
 ):
 
     area_postcode = clean_postcode(
-        row["postcode"]
+        row[
+            "postcode"
+        ]
     )
 
-    output = row.to_dict()
 
-    output["postcode"] = (
-        area_postcode
+    output = (
+        row.to_dict()
     )
 
-    output["mode"] = mode
+
+    output[
+        "postcode"
+    ] = area_postcode
+
+
+    output[
+        "mode"
+    ] = mode
 
 
     detail_postcode = (
@@ -1026,6 +1410,7 @@ def enrich_candidate(
             area_postcode
         )
     )
+
 
     output[
         "detail_postcode"
@@ -1054,23 +1439,26 @@ def enrich_candidate(
 
             print(
                 f"[PRICE ERROR] "
-                f"{area_postcode}: {e}"
+                f"{area_postcode}: "
+                f"{e}"
             )
 
             output[
                 "live_price"
             ] = float(
-                row["price_data_7"]
+                row[
+                    "price_data_7"
+                ]
             )
 
     else:
 
-        # Rent mode doesn't need another
-        # purchase-price API call.
         output[
             "live_price"
         ] = float(
-            row["price_data_7"]
+            row[
+                "price_data_7"
+            ]
         )
 
 
@@ -1099,8 +1487,6 @@ def enrich_candidate(
 
         except Exception as first_error:
 
-            # If district-level rent fails,
-            # try representative full postcode.
             try:
 
                 if detail_postcode:
@@ -1120,7 +1506,8 @@ def enrich_candidate(
 
                 print(
                     f"[RENT ERROR] "
-                    f"{area_postcode}: {e}"
+                    f"{area_postcode}: "
+                    f"{e}"
                 )
 
                 output[
@@ -1129,7 +1516,7 @@ def enrich_candidate(
 
 
     # =====================================================
-    # INVESTMENT YIELD
+    # GROSS YIELD
     # =====================================================
 
     output[
@@ -1151,15 +1538,64 @@ def enrich_candidate(
             "gross_yield"
         ] = (
             float(
-                output["live_rent"]
+                output[
+                    "live_rent"
+                ]
             )
             * 52
             /
             float(
-                output["live_price"]
+                output[
+                    "live_price"
+                ]
             )
             * 100
         )
+
+
+    # =====================================================
+    # AVERAGE BEDROOMS
+    # =====================================================
+
+    try:
+
+        avg_bedrooms = (
+            fetch_average_bedrooms(
+                area_postcode,
+                mode
+            )
+        )
+
+
+        if (
+            avg_bedrooms is None
+            and detail_postcode
+        ):
+
+            avg_bedrooms = (
+                fetch_average_bedrooms(
+                    detail_postcode,
+                    mode
+                )
+            )
+
+
+        output[
+            "average_bedrooms"
+        ] = avg_bedrooms
+
+
+    except Exception as e:
+
+        print(
+            f"[BEDROOM ERROR] "
+            f"{area_postcode}: "
+            f"{e}"
+        )
+
+        output[
+            "average_bedrooms"
+        ] = None
 
 
     # =====================================================
@@ -1194,7 +1630,8 @@ def enrich_candidate(
 
             print(
                 f"[CRIME ERROR] "
-                f"{area_postcode}: {e}"
+                f"{area_postcode}: "
+                f"{e}"
             )
 
             output[
@@ -1215,6 +1652,7 @@ def enrich_candidate(
         or area_postcode
     )
 
+
     try:
 
         output.update(
@@ -1227,13 +1665,19 @@ def enrich_candidate(
 
         print(
             f"[SCHOOL ERROR] "
-            f"{area_postcode}: {e}"
+            f"{area_postcode}: "
+            f"{e}"
         )
 
         output.update({
-            "school_nearby": None,
-            "school_distance": None,
-            "nearest_school": None
+            "school_nearby":
+                None,
+
+            "school_distance":
+                None,
+
+            "nearest_school":
+                None
         })
 
 
@@ -1255,26 +1699,37 @@ def enrich_candidate(
 
             print(
                 f"[RESTAURANT ERROR] "
-                f"{area_postcode}: {e}"
+                f"{area_postcode}: "
+                f"{e}"
             )
 
             output.update({
-                "restaurants_nearby": None,
-                "restaurant_count": None,
-                "nearest_restaurant_distance": None
+                "restaurants_nearby":
+                    None,
+
+                "restaurant_count":
+                    None,
+
+                "nearest_restaurant_distance":
+                    None
             })
 
     else:
 
         output.update({
-            "restaurants_nearby": None,
-            "restaurant_count": None,
-            "nearest_restaurant_distance": None
+            "restaurants_nearby":
+                None,
+
+            "restaurant_count":
+                None,
+
+            "nearest_restaurant_distance":
+                None
         })
 
 
     # =====================================================
-    # FLOOD RISK
+    # FLOOD
     # =====================================================
 
     if detail_postcode:
@@ -1291,19 +1746,26 @@ def enrich_candidate(
 
             print(
                 f"[FLOOD ERROR] "
-                f"{area_postcode}: {e}"
+                f"{area_postcode}: "
+                f"{e}"
             )
 
             output.update({
-                "flood_risk": None,
-                "low_flood_risk": None
+                "flood_risk":
+                    None,
+
+                "low_flood_risk":
+                    None
             })
 
     else:
 
         output.update({
-            "flood_risk": None,
-            "low_flood_risk": None
+            "flood_risk":
+                None,
+
+            "low_flood_risk":
+                None
         })
 
 
@@ -1335,27 +1797,35 @@ def enrich_candidate(
             )
 
             output.update({
-                "internet_download_mbps": None,
-                "good_internet": None
+                "internet_download_mbps":
+                    None,
+
+                "good_internet":
+                    None
             })
 
     else:
 
         output.update({
-            "internet_download_mbps": None,
-            "good_internet": None
+            "internet_download_mbps":
+                None,
+
+            "good_internet":
+                None
         })
 
 
     # =====================================================
-    # FUTURE PROPERTY PRICE
+    # FUTURE PRICE
     # =====================================================
 
     output[
         "predicted_future_price"
     ] = (
         float(
-            output["live_price"]
+            output[
+                "live_price"
+            ]
         )
         *
         (
@@ -1375,7 +1845,7 @@ def enrich_candidate(
 
 
 # =========================================================
-# PARALLEL FETCHING
+# PARALLEL ENRICHMENT
 # =========================================================
 
 def enrich_shortlist_parallel(
@@ -1387,7 +1857,9 @@ def enrich_shortlist_parallel(
 
     enriched = []
 
+
     rows = [
+
         row
 
         for _, row
@@ -1407,7 +1879,9 @@ def enrich_shortlist_parallel(
                 bedrooms_value,
                 mode
             ):
-            row["postcode"]
+            row[
+                "postcode"
+            ]
 
             for row
             in rows
@@ -1432,7 +1906,8 @@ def enrich_shortlist_parallel(
 
                 print(
                     f"Could not load "
-                    f"{postcode}: {e}"
+                    f"{postcode}: "
+                    f"{e}"
                 )
 
 
@@ -1453,15 +1928,24 @@ def normalise(
         dtype=float
     )
 
+
     valid = values[
-        ~np.isnan(values)
+        ~np.isnan(
+            values
+        )
     ]
 
-    if len(valid) == 0:
+
+    if len(
+        valid
+    ) == 0:
 
         return np.ones(
-            len(values)
+            len(
+                values
+            )
         )
+
 
     low = np.nanmin(
         values
@@ -1471,51 +1955,74 @@ def normalise(
         values
     )
 
+
     if high == low:
 
         return np.ones(
-            len(values)
+            len(
+                values
+            )
         )
+
 
     if higher_is_better:
 
         return (
-            values - low
+            values
+            - low
         ) / (
-            high - low
+            high
+            - low
         )
 
+
     return (
-        high - values
+        high
+        - values
     ) / (
-        high - low
+        high
+        - low
     )
 
 
 # =========================================================
-# ICON
+# AMENITY ICON
 # =========================================================
 
-def amenity_icon(value):
+def amenity_icon(
+    value
+):
 
     if value is True:
+
         return "✅"
 
     if value is False:
+
         return "❌"
 
     return "—"
 
 
 # =========================================================
-# MODE + BUDGET INPUT
+# MODE
 # =========================================================
 
 property_mode = widgets.Dropdown(
+
     options=[
-        ("Buy", "buy"),
-        ("Rent", "rent"),
-        ("Invest", "invest")
+        (
+            "Buy",
+            "buy"
+        ),
+        (
+            "Rent",
+            "rent"
+        ),
+        (
+            "Invest",
+            "invest"
+        )
     ],
 
     value="buy",
@@ -1528,7 +2035,12 @@ property_mode = widgets.Dropdown(
 )
 
 
+# =========================================================
+# BUDGET
+# =========================================================
+
 budget = widgets.Text(
+
     value="",
 
     placeholder=(
@@ -1549,52 +2061,79 @@ def get_budget_value():
 
         cleaned = (
             budget.value
-            .replace("£", "")
-            .replace(",", "")
+            .replace(
+                "£",
+                ""
+            )
+            .replace(
+                ",",
+                ""
+            )
             .strip()
         )
+
 
         value = float(
             cleaned
         )
 
+
         if value <= 0:
+
             raise ValueError
+
 
         return value
 
+
     except Exception:
 
-        if property_mode.value == "rent":
+        if (
+            property_mode.value
+            == "rent"
+        ):
 
-            message = (
+            raise ValueError(
                 "Enter a valid weekly rent, "
                 "for example 400."
             )
 
-        else:
-
-            message = (
-                "Enter a valid property budget."
-            )
-
         raise ValueError(
-            message
+            "Enter a valid property budget."
         )
 
 
 # =========================================================
-# BEDROOMS
+# BEDROOM FILTER
 # =========================================================
 
 bedrooms = widgets.Dropdown(
+
     options=[
-        ("Any", 0),
-        ("1 bedroom", 1),
-        ("2 bedrooms", 2),
-        ("3 bedrooms", 3),
-        ("4 bedrooms", 4),
-        ("5+ bedrooms", 5)
+        (
+            "Any",
+            0
+        ),
+        (
+            "1 bedroom",
+            1
+        ),
+        (
+            "2 bedrooms",
+            2
+        ),
+        (
+            "3 bedrooms",
+            3
+        ),
+        (
+            "4 bedrooms",
+            4
+        ),
+        (
+            "5+ bedrooms",
+            5
+        )
     ],
 
     value=0,
@@ -1622,17 +2161,20 @@ school_checkbox = widgets.Checkbox(
     indent=False
 )
 
+
 restaurants_checkbox = widgets.Checkbox(
     value=False,
     description="Restaurants nearby",
     indent=False
 )
 
+
 flood_checkbox = widgets.Checkbox(
     value=False,
     description="Low flood risk",
     indent=False
 )
+
 
 internet_checkbox = widgets.Checkbox(
     value=False,
@@ -1642,6 +2184,7 @@ internet_checkbox = widgets.Checkbox(
 
 
 amenity_box = widgets.HBox(
+
     [
         school_checkbox,
         restaurants_checkbox,
@@ -1661,6 +2204,7 @@ amenity_box = widgets.HBox(
 # =========================================================
 
 names = {
+
     "price":
         "Purchase Price",
 
@@ -1673,15 +2217,22 @@ names = {
 
 
 defaults = {
-    "price": 40,
-    "growth": 40,
-    "crime": 20
+
+    "price":
+        40,
+
+    "growth":
+        40,
+
+    "crime":
+        20
 }
 
 
 keys = list(
     names.keys()
 )
+
 
 sliders = {}
 numbers = {}
@@ -1707,12 +2258,13 @@ comparison_output = widgets.Output()
 
 
 # =========================================================
-# BUILD SLIDERS
+# BUILD WEIGHT CONTROLS
 # =========================================================
 
 for key in keys:
 
     label = widgets.HTML(
+
         value=(
             f"<b>{names[key]}</b>"
         ),
@@ -1723,17 +2275,24 @@ for key in keys:
         )
     )
 
+
     weight_labels[
         key
     ] = label
 
 
     slider = widgets.IntSlider(
-        value=defaults[key],
+
+        value=defaults[
+            key
+        ],
+
         min=0,
         max=100,
         step=1,
+
         readout=False,
+
         continuous_update=True,
 
         layout=widgets.Layout(
@@ -1745,7 +2304,11 @@ for key in keys:
 
 
     number = widgets.BoundedIntText(
-        value=defaults[key],
+
+        value=defaults[
+            key
+        ],
+
         min=0,
         max=100,
         step=1,
@@ -1762,8 +2325,11 @@ for key in keys:
 
 
     lock_button = widgets.ToggleButton(
+
         value=False,
+
         description="🔓",
+
         tooltip="Lock this weight",
 
         layout=widgets.Layout(
@@ -1776,9 +2342,11 @@ for key in keys:
         key
     ] = slider
 
+
     numbers[
         key
     ] = number
+
 
     lock_buttons[
         key
@@ -1786,7 +2354,9 @@ for key in keys:
 
 
     weight_rows.append(
+
         widgets.HBox(
+
             [
                 label,
                 slider,
@@ -1805,6 +2375,7 @@ for key in keys:
 
 
 preferences_box = widgets.VBox(
+
     weight_rows,
 
     layout=widgets.Layout(
@@ -1815,7 +2386,7 @@ preferences_box = widgets.VBox(
 
 
 # =========================================================
-# LOCK HANDLER
+# LOCKS
 # =========================================================
 
 def lock_changed(
@@ -1826,6 +2397,7 @@ def lock_changed(
     if change[
         "name"
     ] != "value":
+
         return
 
 
@@ -1869,15 +2441,20 @@ for key in keys:
 
 
 # =========================================================
-# TOTAL + CHART
+# TOTAL
 # =========================================================
 
 def refresh_total():
 
     total = sum(
-        numbers[k].value
-        for k in keys
+        numbers[
+            k
+        ].value
+
+        for k
+        in keys
     )
+
 
     colour = (
         "#16803c"
@@ -1885,27 +2462,48 @@ def refresh_total():
         else "#b42318"
     )
 
+
     total_label.value = (
+
         f"<b style='color:{colour}'>"
+
         f"Total preference: "
         f"{total}% / 100%"
+
         f"</b>"
     )
 
 
+# =========================================================
+# DONUT CHART
+# =========================================================
+
 def refresh_chart():
 
     values = [
-        numbers[k].value
-        for k in keys
+
+        numbers[
+            k
+        ].value
+
+        for k
+        in keys
     ]
 
+
     fig = go.Figure(
+
         data=[
+
             go.Pie(
+
                 labels=[
-                    names[k]
-                    for k in keys
+                    names[
+                        k
+                    ]
+
+                    for k
+                    in keys
                 ],
 
                 values=values,
@@ -1925,7 +2523,9 @@ def refresh_chart():
         ]
     )
 
+
     fig.update_layout(
+
         title=(
             "Preference distribution"
         ),
@@ -1946,6 +2546,7 @@ def refresh_chart():
             xanchor="center"
         )
     )
+
 
     with chart_output:
 
@@ -2033,6 +2634,7 @@ def change_weight(
 
 
     if busy:
+
         return
 
 
@@ -2060,8 +2662,10 @@ def change_weight(
 
 
     new_value = int(
+
         max(
             0,
+
             min(
                 100,
                 new_value
@@ -2071,22 +2675,39 @@ def change_weight(
 
 
     locked_keys = [
+
         k
-        for k in keys
-        if lock_buttons[k].value
+
+        for k
+        in keys
+
+        if lock_buttons[
+            k
+        ].value
     ]
 
 
     unlocked_keys = [
+
         k
-        for k in keys
-        if not lock_buttons[k].value
+
+        for k
+        in keys
+
+        if not lock_buttons[
+            k
+        ].value
     ]
 
 
     locked_total = sum(
-        numbers[k].value
-        for k in locked_keys
+
+        numbers[
+            k
+        ].value
+
+        for k
+        in locked_keys
     )
 
 
@@ -2101,10 +2722,14 @@ def change_weight(
     ) == 1:
 
         only_key = (
-            unlocked_keys[0]
+            unlocked_keys[
+                0
+            ]
         )
 
+
         busy = True
+
 
         try:
 
@@ -2114,11 +2739,13 @@ def change_weight(
                 available_total
             )
 
+
             sliders[
                 only_key
             ].value = (
                 available_total
             )
+
 
         finally:
 
@@ -2138,8 +2765,12 @@ def change_weight(
 
 
     other_unlocked = [
+
         k
-        for k in unlocked_keys
+
+        for k
+        in unlocked_keys
+
         if k != changed_key
     ]
 
@@ -2151,8 +2782,11 @@ def change_weight(
 
 
     old_values = {
+
         k:
-        numbers[k].value
+            numbers[
+                k
+            ].value
 
         for k
         in other_unlocked
@@ -2167,9 +2801,12 @@ def change_weight(
     if old_total == 0:
 
         exact = {
+
             k:
-            remaining
-            / len(other_unlocked)
+                remaining
+                / len(
+                    other_unlocked
+                )
 
             for k
             in other_unlocked
@@ -2178,10 +2815,13 @@ def change_weight(
     else:
 
         exact = {
+
             k:
-            remaining
-            * old_values[k]
-            / old_total
+                remaining
+                * old_values[
+                    k
+                ]
+                / old_total
 
             for k
             in other_unlocked
@@ -2189,8 +2829,13 @@ def change_weight(
 
 
     allocated = {
+
         k:
-        int(exact[k])
+            int(
+                exact[
+                    k
+                ]
+            )
 
         for k
         in other_unlocked
@@ -2206,11 +2851,16 @@ def change_weight(
 
 
     order = sorted(
+
         other_unlocked,
 
         key=lambda k:
-        exact[k]
-        - allocated[k],
+            exact[
+                k
+            ]
+            - allocated[
+                k
+            ],
 
         reverse=True
     )
@@ -2220,20 +2870,28 @@ def change_weight(
         :leftover
     ]:
 
-        allocated[k] += 1
+        allocated[
+            k
+        ] += 1
 
 
     busy = True
+
 
     try:
 
         numbers[
             changed_key
-        ].value = new_value
+        ].value = (
+            new_value
+        )
+
 
         sliders[
             changed_key
-        ].value = new_value
+        ].value = (
+            new_value
+        )
 
 
         for k in other_unlocked:
@@ -2241,14 +2899,20 @@ def change_weight(
             numbers[
                 k
             ].value = (
-                allocated[k]
+                allocated[
+                    k
+                ]
             )
+
 
             sliders[
                 k
             ].value = (
-                allocated[k]
+                allocated[
+                    k
+                ]
             )
+
 
     finally:
 
@@ -2259,19 +2923,27 @@ def change_weight(
     refresh_chart()
 
 
+# =========================================================
+# SLIDER CALLBACKS
+# =========================================================
+
 def on_slider(
     change,
     key
 ):
 
     if (
-        change["name"] == "value"
+        change[
+            "name"
+        ] == "value"
         and not busy
     ):
 
         change_weight(
             key,
-            change["new"]
+            change[
+                "new"
+            ]
         )
 
 
@@ -2281,13 +2953,17 @@ def on_number(
 ):
 
     if (
-        change["name"] == "value"
+        change[
+            "name"
+        ] == "value"
         and not busy
     ):
 
         change_weight(
             key,
-            change["new"]
+            change[
+                "new"
+            ]
         )
 
 
@@ -2322,7 +2998,7 @@ for key in keys:
 
 
 # =========================================================
-# SCORE CANDIDATES
+# SCORE
 # =========================================================
 
 def score_candidates(
@@ -2332,87 +3008,134 @@ def score_candidates(
 ):
 
     if not candidates:
+
         return []
 
 
     # =====================================================
-    # BUDGET FILTER
+    # RENT
     # =====================================================
 
     if mode == "rent":
 
-        # £400 means £400 / week
         candidates = [
+
             c
-            for c in candidates
+
+            for c
+            in candidates
+
             if c.get(
                 "live_rent"
             ) is not None
         ]
 
+
         candidates = [
+
             c
-            for c in candidates
+
+            for c
+            in candidates
+
             if float(
-                c["live_rent"]
+                c[
+                    "live_rent"
+                ]
             )
             <= budget_value
         ]
 
+
         costs = [
+
             float(
-                c["live_rent"]
+                c[
+                    "live_rent"
+                ]
             )
-            for c in candidates
+
+            for c
+            in candidates
         ]
 
+
+    # =====================================================
+    # BUY / INVEST
+    # =====================================================
 
     else:
 
         candidates = [
+
             c
-            for c in candidates
+
+            for c
+            in candidates
+
             if c.get(
                 "live_price"
             ) is not None
         ]
 
-        # Final budget is STRICT maximum.
+
         candidates = [
+
             c
-            for c in candidates
+
+            for c
+            in candidates
+
             if float(
-                c["live_price"]
+                c[
+                    "live_price"
+                ]
             )
             <= budget_value
         ]
 
+
         costs = [
+
             float(
-                c["live_price"]
+                c[
+                    "live_price"
+                ]
             )
-            for c in candidates
+
+            for c
+            in candidates
         ]
 
 
     if not candidates:
+
         return []
 
 
     growth_values = [
+
         float(
-            c["predicted_growth"]
+            c[
+                "predicted_growth"
+            ]
         )
-        for c in candidates
+
+        for c
+        in candidates
     ]
 
 
     valid_crimes = [
+
         float(
-            c["crime_rate"]
+            c[
+                "crime_rate"
+            ]
         )
 
-        for c in candidates
+        for c
+        in candidates
 
         if not pd.isna(
             c.get(
@@ -2424,10 +3147,13 @@ def score_candidates(
 
 
     crime_fallback = (
+
         np.median(
             valid_crimes
         )
+
         if valid_crimes
+
         else 0
     )
 
@@ -2435,7 +3161,9 @@ def score_candidates(
     crime_values = [
 
         float(
-            c["crime_rate"]
+            c[
+                "crime_rate"
+            ]
         )
 
         if not pd.isna(
@@ -2447,7 +3175,8 @@ def score_candidates(
 
         else crime_fallback
 
-        for c in candidates
+        for c
+        in candidates
     ]
 
 
@@ -2470,9 +3199,12 @@ def score_candidates(
 
 
     weights = {
+
         key:
-        numbers[key].value
-        / 100
+            numbers[
+                key
+            ].value
+            / 100
 
         for key
         in keys
@@ -2493,6 +3225,7 @@ def score_candidates(
                 "school_nearby"
             ) is not True
         ):
+
             continue
 
 
@@ -2502,6 +3235,7 @@ def score_candidates(
                 "restaurants_nearby"
             ) is not True
         ):
+
             continue
 
 
@@ -2511,6 +3245,7 @@ def score_candidates(
                 "low_flood_risk"
             ) is not True
         ):
+
             continue
 
 
@@ -2520,23 +3255,36 @@ def score_candidates(
                 "good_internet"
             ) is not True
         ):
+
             continue
 
 
         score = 100 * (
 
-            weights["price"]
-            * cost_score[i]
+            weights[
+                "price"
+            ]
+            * cost_score[
+                i
+            ]
 
             +
 
-            weights["growth"]
-            * growth_score[i]
+            weights[
+                "growth"
+            ]
+            * growth_score[
+                i
+            ]
 
             +
 
-            weights["crime"]
-            * crime_score[i]
+            weights[
+                "crime"
+            ]
+            * crime_score[
+                i
+            ]
         )
 
 
@@ -2544,11 +3292,13 @@ def score_candidates(
             candidate.copy()
         )
 
+
         result[
             "score"
         ] = float(
             score
         )
+
 
         scored.append(
             result
@@ -2556,10 +3306,13 @@ def score_candidates(
 
 
     return sorted(
+
         scored,
 
         key=lambda x:
-        x["score"],
+            x[
+                "score"
+            ],
 
         reverse=True
     )
@@ -2582,6 +3335,7 @@ def update_comparison_options():
 
     global comparison_checkboxes
 
+
     comparison_checkboxes = []
 
     items = []
@@ -2590,27 +3344,34 @@ def update_comparison_options():
     for p in current_recommendations:
 
         checkbox = widgets.Checkbox(
+
             value=False,
+
             description=p[
                 "postcode"
             ],
+
             indent=False
         )
+
 
         comparison_checkboxes.append(
             (
                 checkbox,
-                p["postcode"]
+                p[
+                    "postcode"
+                ]
             )
         )
+
 
         items.append(
             checkbox
         )
 
 
-    comparison_selection_box.children = (
-        tuple(items)
+    comparison_selection_box.children = tuple(
+        items
     )
 
 
@@ -2750,23 +3511,43 @@ def recommend(_=None):
             )
         )
 
-
+        # =====================================================
+    # FETCH LIVE API DATA
     # =====================================================
-    # ENRICH
-    # =====================================================
 
-    enriched = (
-        enrich_shortlist_parallel(
-            shortlist,
-            bedrooms.value,
-            mode,
-            max_workers=4
-        )
+    enriched = enrich_shortlist_parallel(
+        shortlist,
+        bedrooms.value,
+        mode,
+        max_workers=4
     )
 
 
+    if not enriched:
+
+        with results_output:
+
+            clear_output()
+
+            display(
+                widgets.HTML(
+                    """
+                    <b style="
+                        color:#b42318;
+                    ">
+                        No live API data could be loaded.
+                        Check the notebook output for
+                        API error messages.
+                    </b>
+                    """
+                )
+            )
+
+        return
+
+
     # =====================================================
-    # SCORE
+    # SCORE RESULTS
     # =====================================================
 
     ranked = score_candidates(
@@ -2784,25 +3565,38 @@ def recommend(_=None):
     update_comparison_options()
 
 
+    # =====================================================
+    # NO MATCHES
+    # =====================================================
+
     if not current_recommendations:
 
         with results_output:
 
             clear_output()
 
+
             if mode == "rent":
 
                 message = (
-                    f"No rental areas were found "
+                    f"No rental areas matched "
                     f"within £{budget_value:,.0f}/week."
+                )
+
+            elif mode == "invest":
+
+                message = (
+                    f"No investment areas matched "
+                    f"within £{budget_value:,.0f}."
                 )
 
             else:
 
                 message = (
-                    f"No areas were found within "
-                    f"£{budget_value:,.0f}."
+                    f"No buying areas matched "
+                    f"within £{budget_value:,.0f}."
                 )
+
 
             display(
                 widgets.HTML(
@@ -2818,9 +3612,8 @@ def recommend(_=None):
 
         return
 
-
     # =====================================================
-    # CARDS
+    # RESULT CARDS
     # =====================================================
 
     cards = []
@@ -2830,12 +3623,6 @@ def recommend(_=None):
         current_recommendations,
         start=1
     ):
-
-
-        mode = p.get(
-            "mode",
-            property_mode.value
-        )
 
 
         price = float(
@@ -2871,7 +3658,20 @@ def recommend(_=None):
 
 
         # =================================================
-        # MODE-SPECIFIC VALUES
+        # BEDROOM DISPLAY
+        # =================================================
+
+        bedrooms_display = (
+            display_bedrooms(
+                p.get(
+                    "average_bedrooms"
+                )
+            )
+        )
+
+
+        # =================================================
+        # MODE VALUES
         # =================================================
 
         if mode == "rent":
@@ -2880,62 +3680,62 @@ def recommend(_=None):
                 "live_rent"
             )
 
-            if rent is None:
 
-                cost_label = (
-                    "Weekly rent"
-                )
-
-                cost_display = (
-                    "Unavailable"
-                )
-
-                second_label = (
-                    "Approx. monthly rent"
-                )
-
-                second_display = (
-                    "Unavailable"
-                )
-
-            else:
+            if rent is not None:
 
                 rent = float(
                     rent
                 )
 
-                monthly_rent = (
-                    rent
-                    * 52
-                    / 12
-                )
 
                 cost_label = (
                     "Weekly rent"
                 )
 
+
                 cost_display = (
                     f"£{rent:,.0f}/week"
                 )
+
 
                 second_label = (
                     "Approx. monthly rent"
                 )
 
+
                 second_display = (
-                    f"£{monthly_rent:,.0f}/month"
+                    f"£{rent * 52 / 12:,.0f}/month"
                 )
+
+            else:
+
+                cost_label = (
+                    "Weekly rent"
+                )
+
+
+                cost_display = "—"
+
+
+                second_label = (
+                    "Approx. monthly rent"
+                )
+
+
+                second_display = "—"
 
 
             third_label = (
                 "Predicted area growth"
             )
 
+
             third_display = (
                 f"{growth:.2f}%"
             )
 
-            mode_name = "Rent"
+
+            mode_name = "RENT"
 
 
         elif mode == "invest":
@@ -2944,34 +3744,46 @@ def recommend(_=None):
                 "Investment price"
             )
 
+
             cost_display = (
                 f"£{price:,.0f}"
             )
 
-            gross_yield = p.get(
-                "gross_yield"
+
+            gross_yield = (
+                p.get(
+                    "gross_yield"
+                )
             )
+
 
             second_label = (
                 "Gross rental yield"
             )
 
+
             second_display = (
-                "Unavailable"
+
+                "—"
+
                 if gross_yield is None
+
                 else
                 f"{float(gross_yield):.2f}%"
             )
+
 
             third_label = (
                 "Predicted growth"
             )
 
+
             third_display = (
                 f"{growth:.2f}%"
             )
 
-            mode_name = "Invest"
+
+            mode_name = "INVEST"
 
 
         else:
@@ -2980,82 +3792,84 @@ def recommend(_=None):
                 "Current asking price"
             )
 
+
             cost_display = (
                 f"£{price:,.0f}"
             )
+
 
             second_label = (
                 "Predicted growth"
             )
 
+
             second_display = (
                 f"{growth:.2f}%"
             )
+
 
             third_label = (
                 "Predicted future price"
             )
 
+
             third_display = (
                 f"£{future_price:,.0f}"
             )
 
-            mode_name = "Buy"
+
+            mode_name = "BUY"
 
 
         # =================================================
         # AMENITIES
         # =================================================
 
-        school_icon = (
-            amenity_icon(
-                p.get(
-                    "school_nearby"
-                )
+        school_icon = amenity_icon(
+            p.get(
+                "school_nearby"
             )
         )
 
 
-        restaurant_icon = (
-            amenity_icon(
-                p.get(
-                    "restaurants_nearby"
-                )
+        restaurant_icon = amenity_icon(
+            p.get(
+                "restaurants_nearby"
             )
         )
 
 
-        flood_icon = (
-            amenity_icon(
-                p.get(
-                    "low_flood_risk"
-                )
+        flood_icon = amenity_icon(
+            p.get(
+                "low_flood_risk"
             )
         )
 
 
-        internet_speed = p.get(
-            "internet_download_mbps"
+        internet_speed = (
+            p.get(
+                "internet_download_mbps"
+            )
         )
 
 
-        if internet_speed is None:
+        internet_display = (
 
-            internet_display = (
-                "—"
-            )
+            "—"
 
-        else:
+            if internet_speed is None
 
-            internet_display = (
-                f"{float(internet_speed):.0f} Mbps"
-            )
+            else
+            f"{float(internet_speed):.0f} Mbps"
+        )
 
 
         nearest_school = (
+
             p.get(
                 "nearest_school"
             )
+
             or "Unavailable"
         )
 
@@ -3089,37 +3903,23 @@ def recommend(_=None):
 
 
         restaurant_text = (
+
             "Unavailable"
+
             if restaurant_count is None
+
             else
             f"{restaurant_count} found"
         )
 
 
         flood_text = (
+
             p.get(
                 "flood_risk"
             )
+
             or "Unavailable"
-        )
-
-
-        representative = (
-            p.get(
-                "detail_postcode"
-            )
-        )
-
-
-        representative_text = (
-            f"Representative postcode: "
-            f"{representative}"
-
-            if representative
-            and representative
-            != p["postcode"]
-
-            else ""
         )
 
 
@@ -3133,6 +3933,7 @@ def recommend(_=None):
                 background:#ffffff;
                 color:#222222;
             ">
+
 
                 <div style="
                     display:flex;
@@ -3150,7 +3951,7 @@ def recommend(_=None):
                         ">
                             RANK #{rank}
                             &nbsp; · &nbsp;
-                            {mode_name.upper()}
+                            {mode_name}
                         </div>
 
                         <div style="
@@ -3162,6 +3963,7 @@ def recommend(_=None):
                         </div>
 
                     </div>
+
 
                     <div style="
                         color:#111;
@@ -3185,13 +3987,13 @@ def recommend(_=None):
                     grid-template-columns:
                     repeat(
                         auto-fit,
-                        minmax(160px, 1fr)
+                        minmax(150px,1fr)
                     );
                     gap:18px;
                 ">
 
 
-                    <div style="color:#222">
+                    <div>
 
                         <span style="color:#666">
                             {cost_label}
@@ -3206,7 +4008,7 @@ def recommend(_=None):
                     </div>
 
 
-                    <div style="color:#222">
+                    <div>
 
                         <span style="color:#666">
                             {second_label}
@@ -3221,7 +4023,7 @@ def recommend(_=None):
                     </div>
 
 
-                    <div style="color:#222">
+                    <div>
 
                         <span style="color:#666">
                             {third_label}
@@ -3236,7 +4038,7 @@ def recommend(_=None):
                     </div>
 
 
-                    <div style="color:#222">
+                    <div>
 
                         <span style="color:#666">
                             Crime
@@ -3255,6 +4057,21 @@ def recommend(_=None):
 
                     </div>
 
+
+                    <div>
+
+                        <span style="color:#666">
+                            Average bedrooms
+                        </span>
+
+                        <br>
+
+                        <b style="color:#111">
+                            🛏️ {bedrooms_display}
+                        </b>
+
+                    </div>
+
                 </div>
 
 
@@ -3269,30 +4086,39 @@ def recommend(_=None):
                 ">
 
                     <div>
+
                         {school_icon}
+
                         <b style="color:#111">
                             School
                         </b>
+
                     </div>
 
 
                     <div>
+
                         {restaurant_icon}
+
                         <b style="color:#111">
                             Restaurants
                         </b>
+
                     </div>
 
 
                     <div>
+
                         {flood_icon}
+
                         <b style="color:#111">
                             Low flood risk
                         </b>
+
                     </div>
 
 
-                    <div style="color:#222">
+                    <div>
 
                         🌐
 
@@ -3332,10 +4158,6 @@ def recommend(_=None):
                     Flood risk:
                     {flood_text}
 
-                    <br>
-
-                    {representative_text}
-
                 </div>
 
             </div>
@@ -3359,7 +4181,7 @@ def recommend(_=None):
 
 
 # =========================================================
-# COMPARISON
+# COMPARE
 # =========================================================
 
 def compare_selected(
@@ -3411,16 +4233,15 @@ def compare_selected(
             for p
             in current_recommendations
 
-            if p["postcode"]
+            if p[
+                "postcode"
+            ]
             in selected_codes
         ]
 
 
         mode = (
-            selected[0].get(
-                "mode",
-                property_mode.value
-            )
+            property_mode.value
         )
 
 
@@ -3434,6 +4255,7 @@ def compare_selected(
                 "Monthly Rent"
             )
 
+
         elif mode == "invest":
 
             cost_header = (
@@ -3443,6 +4265,7 @@ def compare_selected(
             extra_header = (
                 "Gross Yield"
             )
+
 
         else:
 
@@ -3484,25 +4307,33 @@ def compare_selected(
             )
 
 
+            bedrooms_display = (
+                display_bedrooms(
+                    p.get(
+                        "average_bedrooms"
+                    )
+                )
+            )
+
+
             # =============================================
-            # MODE-SPECIFIC COST
+            # MODE VALUES
             # =============================================
 
             if mode == "rent":
 
-                rent = p.get(
-                    "live_rent"
+                rent = (
+                    p.get(
+                        "live_rent"
+                    )
                 )
+
 
                 if rent is None:
 
-                    cost_display = (
-                        "—"
-                    )
+                    cost_display = "—"
 
-                    extra_display = (
-                        "—"
-                    )
+                    extra_display = "—"
 
                 else:
 
@@ -3510,9 +4341,11 @@ def compare_selected(
                         rent
                     )
 
+
                     cost_display = (
                         f"£{rent:,.0f}/wk"
                     )
+
 
                     extra_display = (
                         f"£{rent * 52 / 12:,.0f}/mo"
@@ -3525,15 +4358,20 @@ def compare_selected(
                     f"£{price:,.0f}"
                 )
 
+
                 gross_yield = (
                     p.get(
                         "gross_yield"
                     )
                 )
 
+
                 extra_display = (
+
                     "—"
+
                     if gross_yield is None
+
                     else
                     f"{float(gross_yield):.2f}%"
                 )
@@ -3548,9 +4386,11 @@ def compare_selected(
                     )
                 )
 
+
                 cost_display = (
                     f"£{price:,.0f}"
                 )
+
 
                 extra_display = (
                     f"£{future_price:,.0f}"
@@ -3592,8 +4432,11 @@ def compare_selected(
 
 
             internet_display = (
+
                 "—"
+
                 if internet_speed is None
+
                 else
                 f"{float(internet_speed):.0f} Mbps"
             )
@@ -3606,31 +4449,50 @@ def compare_selected(
             ">
 
                 <td style="padding:10px">
+
                     <b style="color:#111">
                         {p['postcode']}
                     </b>
+
                 </td>
+
 
                 <td style="padding:10px">
                     {cost_display}
                 </td>
 
+
                 <td style="padding:10px">
                     {growth:.2f}%
                 </td>
+
 
                 <td style="padding:10px">
                     {extra_display}
                 </td>
 
+
                 <td style="padding:10px">
+
                     {
                         p.get(
                             "crime_rating",
                             "Unavailable"
                         )
                     }
+
                 </td>
+
+
+                <td style="
+                    padding:10px;
+                    text-align:center;
+                    color:#111;
+                    font-weight:600;
+                ">
+                    🛏️ {bedrooms_display}
+                </td>
+
 
                 <td style="
                     padding:10px;
@@ -3640,6 +4502,7 @@ def compare_selected(
                     {school_icon}
                 </td>
 
+
                 <td style="
                     padding:10px;
                     text-align:center;
@@ -3648,6 +4511,7 @@ def compare_selected(
                     {restaurant_icon}
                 </td>
 
+
                 <td style="
                     padding:10px;
                     text-align:center;
@@ -3655,6 +4519,7 @@ def compare_selected(
                 ">
                     {flood_icon}
                 </td>
+
 
                 <td style="
                     padding:10px;
@@ -3665,10 +4530,13 @@ def compare_selected(
                     {internet_display}
                 </td>
 
+
                 <td style="padding:10px">
+
                     <b style="color:#111">
                         {score:.0f}/100
                     </b>
+
                 </td>
 
             </tr>
@@ -3690,20 +4558,22 @@ def compare_selected(
                     overflow-x:auto;
                 ">
 
+
                     <table style="
                         width:100%;
-                        min-width:1100px;
+                        min-width:1200px;
                         border-collapse:collapse;
                         font-size:13px;
-                        background:#fff;
-                        color:#222;
+                        background:#ffffff;
+                        color:#222222;
                     ">
+
 
                         <thead>
 
                             <tr style="
-                                background:#eee;
-                                color:#111;
+                                background:#eeeeee;
+                                color:#111111;
                                 border-bottom:
                                 2px solid #bbb;
                             ">
@@ -3726,6 +4596,10 @@ def compare_selected(
 
                                 <th style="padding:10px">
                                     Crime
+                                </th>
+
+                                <th style="padding:10px">
+                                    Avg. Bedrooms
                                 </th>
 
                                 <th style="padding:10px">
@@ -3760,6 +4634,30 @@ def compare_selected(
                     </table>
 
                 </div>
+
+
+                <p style="
+                    color:#777;
+                    font-size:11px;
+                    margin-top:10px;
+                ">
+
+                    🛏️ Average bedrooms rounded
+                    to the nearest whole bedroom
+
+                    &nbsp;&nbsp;
+
+                    ✅ meets requirement
+
+                    &nbsp;&nbsp;
+
+                    ❌ does not meet requirement
+
+                    &nbsp;&nbsp;
+
+                    — data unavailable
+
+                </p>
                 """
             )
         )
@@ -3770,8 +4668,11 @@ def compare_selected(
 # =========================================================
 
 recommend_button = widgets.Button(
+
     description="Find best areas",
+
     button_style="primary",
+
     icon="search",
 
     layout=widgets.Layout(
@@ -3787,8 +4688,11 @@ recommend_button.on_click(
 
 
 compare_button = widgets.Button(
+
     description="Compare selected areas",
+
     button_style="info",
+
     icon="exchange",
 
     layout=widgets.Layout(
@@ -3804,10 +4708,11 @@ compare_button.on_click(
 
 
 # =========================================================
-# FINAL APP
+# APP LAYOUT
 # =========================================================
 
 app = widgets.VBox(
+
     [
 
         widgets.HTML(
@@ -3817,7 +4722,7 @@ app = widgets.VBox(
                 <h2 style="
                     margin:0 0 3px 0;
                 ">
-                    HomeMatch AI
+                    PropertyFinder
                 </h2>
 
                 <p style="
@@ -3844,8 +4749,8 @@ app = widgets.VBox(
         ),
 
 
-        # Budget + mode + bedrooms
         widgets.HBox(
+
             [
                 budget,
                 property_mode,
@@ -3937,9 +4842,11 @@ app = widgets.VBox(
             </h2>
 
             <p style="color:#777">
+
                 Your top matches based on
                 your selected property mode,
                 budget and priorities.
+
             </p>
             """
         ),
@@ -3957,8 +4864,10 @@ app = widgets.VBox(
             </h2>
 
             <p style="color:#777">
+
                 Tick any two or more
                 recommended areas below.
+
             </p>
             """
         ),
@@ -3988,5 +4897,9 @@ app = widgets.VBox(
 # =========================================================
 
 refresh_total()
+
 update_mode_ui()
-display(app)
+
+display(
+    app
+)
